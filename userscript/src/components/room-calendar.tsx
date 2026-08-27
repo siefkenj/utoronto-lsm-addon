@@ -2,7 +2,7 @@ import React from "react";
 import { useStoreActions, useStoreState } from "../store/hooks";
 // Import as a module in your JS
 import "react-bootstrap-typeahead/css/Typeahead.css";
-import { RoomInfo } from "../api/building-info";
+import { formatCapacity, RoomInfo } from "../api/building-info";
 import { ListGroup, OverlayTrigger, Popover } from "react-bootstrap";
 import { HOURS_IN_CALENDAR } from "../store/store";
 
@@ -48,7 +48,7 @@ function RoomInfoDisplay({ room }: { room: RoomInfo }) {
                     <Popover.Body>
                         <ListGroup>
                             <ListGroup.Item>
-                                Capacity: <b>{room.capacity || "unknown"}</b>
+                                Capacity: <b>{formatCapacity(room)}</b>
                             </ListGroup.Item>
                             {room.roomLayout && (
                                 <ListGroup.Item>
@@ -77,7 +77,7 @@ function RoomInfoDisplay({ room }: { room: RoomInfo }) {
                 <h6>
                     {room.building} {room.room}
                 </h6>
-                Capacity {room.capacity}
+                Capacity {formatCapacity(room)}
             </div>
         </OverlayTrigger>
     );

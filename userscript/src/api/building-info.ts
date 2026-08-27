@@ -6,8 +6,31 @@ export interface RoomInfo {
     building: string;
     room: string;
     capacity: number | null;
+    /**
+     * A secondary, smaller capacity (e.g. a reduced testing/exam capacity),
+     * if the LSM page reports more than one capacity for the room.
+     */
+    testingCapacity?: number | null;
     photos: string[];
     roomLayout: string | null;
+}
+
+/**
+ * Format a room's capacity for display. Filtering always uses the larger
+ * `capacity` value; if a smaller secondary capacity is also known, it's
+ * shown in parentheses alongside it.
+ */
+export function formatCapacity(
+    room: Pick<RoomInfo, "capacity" | "testingCapacity">
+): string {
+    const { capacity, testingCapacity } = room;
+    if (capacity == null) {
+        return "unknown";
+    }
+    if (testingCapacity != null && testingCapacity < capacity) {
+        return `${capacity} (${testingCapacity})`;
+    }
+    return `${capacity}`;
 }
 /**
  * Fetch a list of all buildings.
@@ -131,11 +154,24 @@ async function _fetchRoomDetails(building: string, room: string) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(roomDetailsHtml, "text/html");
 
-    // Search for important information like room capacity, etc.
-    const capacityStr = Array.from(doc.querySelectorAll("td")).find(
-        (x) => x.textContent === "Capacity"
-    )?.nextSibling?.textContent;
-    const capacity = capacityStr ? parseInt(capacityStr, 10) : null;
+    // Search for important information like room capacity, etc. The LSM page
+    // has changed its label before (e.g. "Capacity" -> "Room Capacity"), and
+    // it can list more than one capacity (e.g. a reduced "Testing Capacity"
+    // alongside the normal "Room Capacity"). Match any label ending in
+    // "Capacity" rather than an exact string so relabeling doesn't silently
+    // break this again; use the largest value found for filtering, and treat
+    // any smaller one as a secondary capacity.
+    const capacityValues = Array.from(doc.querySelectorAll("td"))
+        .filter((td) => /Capacity$/.test(td.textContent?.trim() ?? ""))
+        .map((td) => {
+            const valueStr = td.nextElementSibling?.textContent?.trim();
+            return valueStr ? parseInt(valueStr, 10) : NaN;
+        })
+        .filter((n) => !Number.isNaN(n));
+    const capacity =
+        capacityValues.length > 0 ? Math.max(...capacityValues) : null;
+    const testingCapacity =
+        capacityValues.length > 1 ? Math.min(...capacityValues) : null;
     const photos = (
         Array.from(doc.querySelectorAll("img[src*=Room]")) as HTMLImageElement[]
     ).map((x) => x.src);
@@ -147,6 +183,7 @@ async function _fetchRoomDetails(building: string, room: string) {
         building,
         room,
         capacity,
+        testingCapacity,
         photos,
         roomLayout,
     };
