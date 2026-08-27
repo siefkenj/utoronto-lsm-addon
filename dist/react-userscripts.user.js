@@ -17559,6 +17559,254 @@
       return await threadsafePromiseData.acquireLock;
     };
   }
+  function extractKeysFromLsmPage(html) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const extractedJavascript = Array.from(doc.querySelectorAll("script:not([src])")).map((x2) => {
+      var _a;
+      return ((_a = x2.firstChild) == null ? void 0 : _a.nodeValue) || "";
+    }).filter((t2) => t2.match("ajaxIdentifier"))[0] || "";
+    const ajaxIdentifiers = Object.fromEntries(
+      extractedJavascript.split("\n").filter((s2) => s2.match('{"') && s2.match("ajaxIdentifier")).map((s2) => {
+        const match = s2.match(/"#(\w+)".*"ajaxIdentifier":"(.*?)"/);
+        if (match) {
+          try {
+            return [match[1], JSON.parse(`"${match[2]}"`)];
+          } catch (e2) {
+            return [match[1], match[2]];
+          }
+        } else {
+          const match2 = s2.match(/"ajaxIdentifier":"(.*?)"/);
+          if (match2) {
+            try {
+              return ["PLUGIN", JSON.parse(`"${match2[1]}"`)];
+            } catch (e2) {
+              return ["PLUGIN", match2[1]];
+            }
+          }
+        }
+        return ["", ""];
+      })
+    );
+    const ret = {
+      ajaxIdentifiers: {
+        BLDG: "",
+        ROOM: "",
+        PLUGIN: "",
+        P1_COURSE: "",
+        P1_SESSON: "",
+        P1_SUBJECT: "",
+        ...ajaxIdentifiers
+      },
+      buildings: {}
+    };
+    const additionalKeys = Object.fromEntries(
+      Array.from(
+        // relevant values from the page are loaded in hidden input elements
+        // with ids like `pSalt` and `pInstance`
+        doc.querySelectorAll("input[id^=p]")
+      ).map((elm2) => {
+        return [elm2.id, elm2.value];
+      })
+    );
+    const elm = doc.querySelector("#BLDG");
+    if (elm) {
+      const buildings = Object.fromEntries(
+        Array.from(elm.querySelectorAll("option")).map((e2) => [e2.value, e2.textContent]).filter((x2) => x2[0] !== "")
+      );
+      Object.assign(ret, { buildings });
+    }
+    Object.assign(ret, additionalKeys);
+    const displayInput = doc.querySelector(
+      "input#P1_DISPLAY"
+    );
+    if (displayInput) {
+      const displayForInput = doc.querySelector(
+        "input[data-for=P1_DISPLAY]"
+      );
+      if (displayForInput) {
+        ret.P1_DISPLAY_OBJ = {
+          n: "P1_DISPLAY",
+          v: displayInput.value,
+          ck: displayForInput.value
+        };
+      } else {
+        log(
+          "WARNING: couldn't find the associated display-for input for the P1_DISPLAY input"
+        );
+      }
+    }
+    return ret;
+  }
+  function formatCapacity(room) {
+    const { capacity, testingCapacity } = room;
+    if (capacity == null) {
+      return "unknown";
+    }
+    if (testingCapacity != null && testingCapacity < capacity) {
+      return `${capacity} (${testingCapacity})`;
+    }
+    return `${capacity}`;
+  }
+  async function fetchBuildings(pageVars) {
+    const body = new URLSearchParams({
+      p_flow_id: "162",
+      p_flow_step_id: "1",
+      p_instance: pageVars.pInstance,
+      p_request: `PLUGIN=${pageVars.ajaxIdentifiers.BLDG}`,
+      p_json: JSON.stringify({
+        pageItems: {
+          itemsToSubmit: [
+            { n: "BLDG", v: "" },
+            { n: "ROOM", v: "" }
+          ],
+          protected: pageVars.pPageItemsProtected,
+          rowVersion: "",
+          formRegionChecksums: []
+        },
+        salt: pageVars.pSalt
+      })
+    });
+    const url = "" + new URL("/ords/wwv_flow.ajax", window.location.href);
+    const resp = await localFetch(url, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+      },
+      method: "POST",
+      body,
+      credentials: "include",
+      mode: "cors"
+    });
+    const buildings = await resp.json();
+    return Object.fromEntries(
+      buildings.values.map((x2) => [x2.r, x2.d])
+    );
+  }
+  async function fetchRoomsForBuilding(building, pageVars) {
+    const body = new URLSearchParams({
+      p_flow_id: "162",
+      p_flow_step_id: "1",
+      p_instance: pageVars.pInstance,
+      p_request: `PLUGIN=${pageVars.ajaxIdentifiers.ROOM}`,
+      p_json: JSON.stringify({
+        pageItems: {
+          itemsToSubmit: [
+            { n: "BLDG", v: building },
+            { n: "ROOM", v: "" }
+          ],
+          protected: pageVars.pPageItemsProtected,
+          rowVersion: ""
+        },
+        salt: pageVars.pSalt
+      })
+    });
+    const url = "" + new URL("/ords/wwv_flow.ajax", window.location.href);
+    const resp = await localFetch(url, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+      },
+      method: "POST",
+      body,
+      credentials: "include",
+      mode: "cors"
+    });
+    const rooms = await resp.json();
+    return rooms.values.map((x2) => x2.r);
+  }
+  async function _fetchRoomDetails(building, room) {
+    var _a;
+    log("Fetching room details for", building, room);
+    let resp = await localFetch(
+      "https://lsm.utoronto.ca/webapp/f?p=210:1:::NO:::"
+    );
+    const pageVars = extractKeysFromLsmPage(await resp.text());
+    const body = new URLSearchParams({
+      p_flow_id: "210",
+      p_flow_step_id: "1",
+      p_instance: pageVars.pInstance,
+      p_request: "P1_ROOM",
+      p_page_submission_id: pageVars.pPageSubmissionId,
+      p_json: JSON.stringify({
+        salt: pageVars.pSalt,
+        pageItems: {
+          itemsToSubmit: [
+            { n: "P1_BLDG", v: building },
+            { n: "P1_ROOM", v: room },
+            pageVars.P1_DISPLAY_OBJ
+          ],
+          protected: pageVars.pPageItemsProtected,
+          rowVersion: ""
+        }
+      }),
+      p_reload_on_submit: "A"
+    });
+    resp = await localFetch("https://lsm.utoronto.ca/webapp/wwv_flow.accept", {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Pragma: "no-cache",
+        "Cache-Control": "no-cache"
+      },
+      method: "POST",
+      body
+    });
+    const roomDetailsHtml = await resp.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(roomDetailsHtml, "text/html");
+    const capacityValues = Array.from(doc.querySelectorAll("td")).filter((td2) => {
+      var _a2;
+      return /Capacity$/.test(((_a2 = td2.textContent) == null ? void 0 : _a2.trim()) ?? "");
+    }).map((td2) => {
+      var _a2, _b;
+      const valueStr = (_b = (_a2 = td2.nextElementSibling) == null ? void 0 : _a2.textContent) == null ? void 0 : _b.trim();
+      return valueStr ? parseInt(valueStr, 10) : NaN;
+    }).filter((n2) => !Number.isNaN(n2));
+    const capacity = capacityValues.length > 0 ? Math.max(...capacityValues) : null;
+    const testingCapacity = capacityValues.length > 1 ? Math.min(...capacityValues) : null;
+    const photos = Array.from(doc.querySelectorAll("img[src*=Room]")).map((x2) => x2.src);
+    const roomLayout = ((_a = doc.querySelector("a[href*=RoomPlansPDF]")) == null ? void 0 : _a.href) || null;
+    return {
+      building,
+      room,
+      capacity,
+      testingCapacity,
+      photos,
+      roomLayout
+    };
+  }
+  const fetchRoomDetails = makePromiseThreadsafe(_fetchRoomDetails);
+  async function fetchRoomInfoForAllBuildings() {
+    let resp = await localFetch(
+      "https://lsm.utoronto.ca/ords/f?p=162:101::BRANCH_TO_PAGE_ACCEPT::::"
+    );
+    const pageVars = extractKeysFromLsmPage(await resp.text());
+    const buildings = await fetchBuildings(pageVars);
+    const buildingInfo = await Promise.all(
+      Object.entries(buildings).map(async ([building, buildingName]) => {
+        return {
+          building,
+          buildingName,
+          rooms: await fetchRoomsForBuilding(building, pageVars)
+        };
+      })
+    );
+    log(buildingInfo);
+    const completeBuildingInfo = await Promise.all(
+      buildingInfo.map(async (info) => {
+        const building = info.building;
+        const rooms = await Promise.all(
+          info.rooms.map(
+            async (room) => await fetchRoomDetails(building, room)
+          )
+        );
+        return {
+          ...info,
+          rooms
+        };
+      })
+    );
+    log(completeBuildingInfo);
+    return completeBuildingInfo;
+  }
   function extractHoursFromDate(date) {
     const hours = date.getHours();
     const minutes = date.getMinutes();
@@ -17758,85 +18006,6 @@
       default:
         throw new Error(`Unknown day of week: ${dayOfWeek}`);
     }
-  }
-  function extractKeysFromLsmPage(html) {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, "text/html");
-    const extractedJavascript = Array.from(doc.querySelectorAll("script:not([src])")).map((x2) => {
-      var _a;
-      return ((_a = x2.firstChild) == null ? void 0 : _a.nodeValue) || "";
-    }).filter((t2) => t2.match("ajaxIdentifier"))[0] || "";
-    const ajaxIdentifiers = Object.fromEntries(
-      extractedJavascript.split("\n").filter((s2) => s2.match('{"') && s2.match("ajaxIdentifier")).map((s2) => {
-        const match = s2.match(/"#(\w+)".*"ajaxIdentifier":"(.*?)"/);
-        if (match) {
-          try {
-            return [match[1], JSON.parse(`"${match[2]}"`)];
-          } catch (e2) {
-            return [match[1], match[2]];
-          }
-        } else {
-          const match2 = s2.match(/"ajaxIdentifier":"(.*?)"/);
-          if (match2) {
-            try {
-              return ["PLUGIN", JSON.parse(`"${match2[1]}"`)];
-            } catch (e2) {
-              return ["PLUGIN", match2[1]];
-            }
-          }
-        }
-        return ["", ""];
-      })
-    );
-    const ret = {
-      ajaxIdentifiers: {
-        BLDG: "",
-        ROOM: "",
-        PLUGIN: "",
-        P1_COURSE: "",
-        P1_SESSON: "",
-        P1_SUBJECT: "",
-        ...ajaxIdentifiers
-      },
-      buildings: {}
-    };
-    const additionalKeys = Object.fromEntries(
-      Array.from(
-        // relevant values from the page are loaded in hidden input elements
-        // with ids like `pSalt` and `pInstance`
-        doc.querySelectorAll("input[id^=p]")
-      ).map((elm2) => {
-        return [elm2.id, elm2.value];
-      })
-    );
-    const elm = doc.querySelector("#BLDG");
-    if (elm) {
-      const buildings = Object.fromEntries(
-        Array.from(elm.querySelectorAll("option")).map((e2) => [e2.value, e2.textContent]).filter((x2) => x2[0] !== "")
-      );
-      Object.assign(ret, { buildings });
-    }
-    Object.assign(ret, additionalKeys);
-    const displayInput = doc.querySelector(
-      "input#P1_DISPLAY"
-    );
-    if (displayInput) {
-      const displayForInput = doc.querySelector(
-        "input[data-for=P1_DISPLAY]"
-      );
-      if (displayForInput) {
-        ret.P1_DISPLAY_OBJ = {
-          n: "P1_DISPLAY",
-          v: displayInput.value,
-          ck: displayForInput.value
-        };
-      } else {
-        log(
-          "WARNING: couldn't find the associated display-for input for the P1_DISPLAY input"
-        );
-      }
-    }
-    return ret;
   }
   const ROOM_INFO = {
     _downloadDate: "2021-09-14T02:02:28.659Z",
@@ -22302,7 +22471,7 @@
           /* @__PURE__ */ jsxRuntimeExports.jsx(Popover$1.Body, { children: /* @__PURE__ */ jsxRuntimeExports.jsxs(ListGroup$1, { children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs(ListGroup$1.Item, { children: [
               "Capacity: ",
-              /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: room.capacity || "unknown" })
+              /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: formatCapacity(room) })
             ] }),
             room.roomLayout && /* @__PURE__ */ jsxRuntimeExports.jsx(ListGroup$1.Item, { children: /* @__PURE__ */ jsxRuntimeExports.jsx("a", { href: room.roomLayout, children: "Room Layout (PDF)" }) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx(ListGroup$1.Item, { children: room.photos.map((photoUrl) => /* @__PURE__ */ jsxRuntimeExports.jsx("a", { href: photoUrl, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -22322,7 +22491,7 @@
             room.room
           ] }),
           "Capacity ",
-          room.capacity
+          formatCapacity(room)
         ] })
       }
     );
@@ -22582,158 +22751,6 @@
   function ActivityThrobber() {
     const loading = useStoreState((state) => state.loadingData);
     return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "throbber-container", children: loading && /* @__PURE__ */ jsxRuntimeExports.jsx(Spinner, { animation: "border", role: "status", variant: "primary" }) });
-  }
-  async function fetchBuildings(pageVars) {
-    const body = new URLSearchParams({
-      p_flow_id: "162",
-      p_flow_step_id: "1",
-      p_instance: pageVars.pInstance,
-      p_request: `PLUGIN=${pageVars.ajaxIdentifiers.BLDG}`,
-      p_json: JSON.stringify({
-        pageItems: {
-          itemsToSubmit: [
-            { n: "BLDG", v: "" },
-            { n: "ROOM", v: "" }
-          ],
-          protected: pageVars.pPageItemsProtected,
-          rowVersion: "",
-          formRegionChecksums: []
-        },
-        salt: pageVars.pSalt
-      })
-    });
-    const url = "" + new URL("/ords/wwv_flow.ajax", window.location.href);
-    const resp = await localFetch(url, {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
-      },
-      method: "POST",
-      body,
-      credentials: "include",
-      mode: "cors"
-    });
-    const buildings = await resp.json();
-    return Object.fromEntries(
-      buildings.values.map((x2) => [x2.r, x2.d])
-    );
-  }
-  async function fetchRoomsForBuilding(building, pageVars) {
-    const body = new URLSearchParams({
-      p_flow_id: "162",
-      p_flow_step_id: "1",
-      p_instance: pageVars.pInstance,
-      p_request: `PLUGIN=${pageVars.ajaxIdentifiers.ROOM}`,
-      p_json: JSON.stringify({
-        pageItems: {
-          itemsToSubmit: [
-            { n: "BLDG", v: building },
-            { n: "ROOM", v: "" }
-          ],
-          protected: pageVars.pPageItemsProtected,
-          rowVersion: ""
-        },
-        salt: pageVars.pSalt
-      })
-    });
-    const url = "" + new URL("/ords/wwv_flow.ajax", window.location.href);
-    const resp = await localFetch(url, {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
-      },
-      method: "POST",
-      body,
-      credentials: "include",
-      mode: "cors"
-    });
-    const rooms = await resp.json();
-    return rooms.values.map((x2) => x2.r);
-  }
-  async function _fetchRoomDetails(building, room) {
-    var _a, _b, _c;
-    log("Fetching room details for", building, room);
-    let resp = await localFetch(
-      "https://lsm.utoronto.ca/webapp/f?p=210:1:::NO:::"
-    );
-    const pageVars = extractKeysFromLsmPage(await resp.text());
-    const body = new URLSearchParams({
-      p_flow_id: "210",
-      p_flow_step_id: "1",
-      p_instance: pageVars.pInstance,
-      p_request: "P1_ROOM",
-      p_page_submission_id: pageVars.pPageSubmissionId,
-      p_json: JSON.stringify({
-        salt: pageVars.pSalt,
-        pageItems: {
-          itemsToSubmit: [
-            { n: "P1_BLDG", v: building },
-            { n: "P1_ROOM", v: room },
-            pageVars.P1_DISPLAY_OBJ
-          ],
-          protected: pageVars.pPageItemsProtected,
-          rowVersion: ""
-        }
-      }),
-      p_reload_on_submit: "A"
-    });
-    resp = await localFetch("https://lsm.utoronto.ca/webapp/wwv_flow.accept", {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        Pragma: "no-cache",
-        "Cache-Control": "no-cache"
-      },
-      method: "POST",
-      body
-    });
-    const roomDetailsHtml = await resp.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(roomDetailsHtml, "text/html");
-    const capacityStr = (_b = (_a = Array.from(doc.querySelectorAll("td")).find(
-      (x2) => x2.textContent === "Capacity"
-    )) == null ? void 0 : _a.nextSibling) == null ? void 0 : _b.textContent;
-    const capacity = capacityStr ? parseInt(capacityStr, 10) : null;
-    const photos = Array.from(doc.querySelectorAll("img[src*=Room]")).map((x2) => x2.src);
-    const roomLayout = ((_c = doc.querySelector("a[href*=RoomPlansPDF]")) == null ? void 0 : _c.href) || null;
-    return {
-      building,
-      room,
-      capacity,
-      photos,
-      roomLayout
-    };
-  }
-  const fetchRoomDetails = makePromiseThreadsafe(_fetchRoomDetails);
-  async function fetchRoomInfoForAllBuildings() {
-    let resp = await localFetch(
-      "https://lsm.utoronto.ca/ords/f?p=162:101::BRANCH_TO_PAGE_ACCEPT::::"
-    );
-    const pageVars = extractKeysFromLsmPage(await resp.text());
-    const buildings = await fetchBuildings(pageVars);
-    const buildingInfo = await Promise.all(
-      Object.entries(buildings).map(async ([building, buildingName]) => {
-        return {
-          building,
-          buildingName,
-          rooms: await fetchRoomsForBuilding(building, pageVars)
-        };
-      })
-    );
-    log(buildingInfo);
-    const completeBuildingInfo = await Promise.all(
-      buildingInfo.map(async (info) => {
-        const building = info.building;
-        const rooms = await Promise.all(
-          info.rooms.map(
-            async (room) => await fetchRoomDetails(building, room)
-          )
-        );
-        return {
-          ...info,
-          rooms
-        };
-      })
-    );
-    log(completeBuildingInfo);
-    return completeBuildingInfo;
   }
   function RoomInfoDownloadButton() {
     const [currentlyClicked, setCurrentlyClicked] = React$2.useState(false);
