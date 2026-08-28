@@ -1,6 +1,6 @@
 {
     "name": "react-userscripts",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "private": true,
     "dependencies": {
         "@daypilot/daypilot-lite-react": "^3.25.0",

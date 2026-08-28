@@ -31,6 +31,24 @@ export type StoredRoomInfo = {
     buildings: { rooms: RoomInfo[]; building: string; buildingName: string }[];
 };
 
+/**
+ * Normalize `StoredRoomInfo` so every room has a `testingCapacity` field.
+ * This keeps older data (cached in local storage, or the built-in fixture
+ * data) that predates the `testingCapacity` field working correctly.
+ */
+function normalizeRoomInfo(roomInfo: StoredRoomInfo): StoredRoomInfo {
+    return {
+        ...roomInfo,
+        buildings: roomInfo.buildings.map((building) => ({
+            ...building,
+            rooms: building.rooms.map((room) => ({
+                testingCapacity: null,
+                ...room,
+            })),
+        })),
+    };
+}
+
 export const HOURS_IN_CALENDAR = [
     9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
 ];
@@ -147,9 +165,9 @@ const rootStore: RootStore = {
         : globalThis.location.host.startsWith("lsm.")
         ? "lsm"
         : "ttb",
-    roomInfo: ROOM_INFO,
+    roomInfo: normalizeRoomInfo(ROOM_INFO),
     setRoomInfo: action((state, payload) => {
-        state.roomInfo = payload;
+        state.roomInfo = normalizeRoomInfo(payload);
     }),
     loadingData: false,
     setLoadingData: action((state, payload) => {
